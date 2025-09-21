@@ -40,6 +40,25 @@
             opacity: 0.9;
         }
 
+        .ssl-status {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+            color: white;
+            font-size: 0.9rem;
+        }
+
+        .ssl-status.valid {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+        }
+
+        .ssl-status.invalid {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid rgba(244, 67, 54, 0.3);
+        }
+
         .card {
             background: white;
             border-radius: 15px;
@@ -274,6 +293,10 @@
         <div class="header">
             <h1>🚀 SSE 测试面板</h1>
             <p>Server-Sent Events 实时消息推送测试</p>
+            <div class="ssl-status" id="sslStatus">
+                <div>🔒 SSL 证书状态: <span id="sslStatusText">检查中...</span></div>
+                <div id="sslDetails" style="margin-top: 5px; font-size: 0.8rem; opacity: 0.8;"></div>
+            </div>
         </div>
 
         <div class="card">
@@ -367,8 +390,43 @@
             messagesContainer: document.getElementById('messagesContainer'),
             totalMessages: document.getElementById('totalMessages'),
             connectionTime: document.getElementById('connectionTime'),
-            lastMessageTime: document.getElementById('lastMessageTime')
+            lastMessageTime: document.getElementById('lastMessageTime'),
+            sslStatus: document.getElementById('sslStatus'),
+            sslStatusText: document.getElementById('sslStatusText'),
+            sslDetails: document.getElementById('sslDetails')
         };
+
+        // 检查SSL证书状态
+        async function checkSslStatus() {
+            try {
+                const response = await fetch('/ssl/status');
+                const data = await response.json();
+                
+                if (data.hasCertificate) {
+                    elements.sslStatus.className = 'ssl-status valid';
+                    elements.sslStatusText.textContent = '有效';
+                    elements.sslDetails.innerHTML = `
+                        域名: ${data.subject}<br>
+                        有效期至: ${new Date(data.notAfter).toLocaleString()}<br>
+                        剩余天数: ${data.daysUntilExpiry} 天
+                    `;
+                } else {
+                    elements.sslStatus.className = 'ssl-status invalid';
+                    elements.sslStatusText.textContent = '无证书';
+                    elements.sslDetails.textContent = '当前没有有效的SSL证书';
+                }
+            } catch (error) {
+                elements.sslStatus.className = 'ssl-status invalid';
+                elements.sslStatusText.textContent = '检查失败';
+                elements.sslDetails.textContent = '无法获取SSL状态: ' + error.message;
+            }
+        }
+
+        // 页面加载时检查SSL状态
+        checkSslStatus();
+        
+        // 每10分钟检查一次SSL状态
+        setInterval(checkSslStatus, 10 * 60 * 1000);
 
         // 连接按钮点击事件
         elements.connectBtn.addEventListener('click', connect);

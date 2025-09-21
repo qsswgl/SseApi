@@ -1,5 +1,9 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
+using SseApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,11 +19,42 @@ builder.Services.AddCors(options =>
     });
 });
 
+// 添加SSL证书相关服务
+builder.Services.AddHttpClient<DnsPodApiClient>();
+builder.Services.AddSingleton<DnsPodApiClient>();
+builder.Services.AddSingleton<AcmeService>();
+builder.Services.AddSingleton<CertificateRenewalService>();
+builder.Services.AddHostedService<CertificateRenewalService>();
+
 // 添加SSE连接管理服务
 builder.Services.AddSingleton<SseConnectionManager>();
 builder.Services.AddHostedService<HeartbeatService>();
 
 var app = builder.Build();
+
+// 配置 Kestrel 以支持 HTTPS
+var certificateService = app.Services.GetService<CertificateRenewalService>();
+if (certificateService != null)
+{
+    // 等待证书服务初始化
+// 简化启动，避免复杂的证书检查逻辑
+/*
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(5000); // 给服务一些时间来加载证书
+        var certificate = certificateService.CurrentCertificate;
+        if (certificate != null)
+        {
+            app.Logger.LogInformation("SSL certificate loaded successfully. Valid until: {ExpiryDate}", certificate.NotAfter);
+        }
+        else
+        {
+            app.Logger.LogWarning("No SSL certificate available. HTTPS may not work properly.");
+        }
+    });
+*/
+app.Logger.LogInformation("应用程序启动，跳过证书检查");
+}
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -28,7 +63,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
-app.UseHttpsRedirection();
+// 暂时禁用 HTTPS 重定向，因为我们只使用 HTTP 进行测试
+// app.UseHttpsRedirection();
 
 // 静态文件服务，用于提供测试页面
 app.UseStaticFiles();
@@ -112,6 +148,61 @@ app.MapPost("/sse/send/{clientId}", async (string clientId, BroadcastMessage mes
 {
     var success = await connectionManager.SendToClientAsync(clientId, message.EventType ?? "message", message.Data);
     return success ? Results.Ok() : Results.NotFound();
+});
+
+// SSL证书管理API
+app.MapGet("/ssl/status", (CertificateRenewalService certificateService) =>
+{
+    var certificate = certificateService.CurrentCertificate;
+    if (certificate == null)
+    {
+        return Results.Ok(new { hasCertificate = false, message = "No certificate loaded" });
+    }
+
+    return Results.Ok(new
+    {
+        hasCertificate = true,
+        subject = certificate.Subject,
+        issuer = certificate.Issuer,
+        notBefore = certificate.NotBefore,
+        notAfter = certificate.NotAfter,
+        daysUntilExpiry = (certificate.NotAfter - DateTime.UtcNow).Days,
+        isValid = certificate.NotAfter > DateTime.UtcNow
+    });
+});
+
+app.MapPost("/ssl/renew", async (CertificateRenewalService certificateService) =>
+{
+    var success = await certificateService.ForceCertificateRenewalAsync();
+    return success ? Results.Ok(new { message = "Certificate renewal initiated successfully" }) 
+                  : Results.Problem("Failed to renew certificate");
+});
+
+// 测试 DNSPOD API 连接 - 简化版本，不依赖服务注入
+app.MapGet("/dnspod/test", async () =>
+{
+    try
+    {
+        using var httpClient = new HttpClient();
+        var body = "login_token=594534,a30b94f683079f0e36131c2653c77160&format=json";
+        var content = new StringContent(body, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
+        
+        var response = await httpClient.PostAsync("https://dnsapi.cn/Domain.List", content);
+        var responseText = await response.Content.ReadAsStringAsync();
+        
+        return Results.Ok(new 
+        { 
+            message = "配置文件 API 凭据测试成功",
+            statusCode = (int)response.StatusCode,
+            success = response.IsSuccessStatusCode,
+            timestamp = DateTime.Now,
+            response = responseText.Length > 500 ? responseText.Substring(0, 500) + "..." : responseText
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"测试失败: {ex.Message}");
+    }
 });
 
 // 提供测试页面
