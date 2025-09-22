@@ -103,6 +103,39 @@ app.MapGet("/api/sse/stream", async context =>
     catch { }
 });
 
+// 按用户ID的 SSE 流（新）：/sse/UsersID/{UsersID}
+app.MapGet("/sse/UsersID/{UsersID}", async (HttpContext context, string UsersID, SseConnectionManager sse) =>
+{
+    context.Response.Headers.Append("Content-Type", "text/event-stream");
+    context.Response.Headers.Append("Cache-Control", "no-cache");
+    context.Response.Headers.Append("Connection", "keep-alive");
+    context.Response.Headers.Append("Access-Control-Allow-Origin", "*");
+
+    var connectionId = sse.Register(UsersID, context.Response.Body);
+
+    try
+    {
+        // 初始欢迎消息
+        await context.Response.WriteAsync($"event: init\n");
+        await context.Response.WriteAsync($"data: {{\"UsersID\":\"{UsersID}\",\"connectedAt\":\"{DateTime.UtcNow:o}\"}}\n\n");
+        await context.Response.Body.FlushAsync();
+
+        // 心跳
+        while (!context.RequestAborted.IsCancellationRequested)
+        {
+            await context.Response.WriteAsync($"event: heartbeat\n");
+            await context.Response.WriteAsync($"data: {{\"ts\":\"{DateTime.UtcNow:o}\"}}\n\n");
+            await context.Response.Body.FlushAsync();
+            await Task.Delay(15000, context.RequestAborted);
+        }
+    }
+    catch { }
+    finally
+    {
+        sse.Unregister(UsersID, connectionId);
+    }
+});
+
 // 简单状态
 app.MapGet("/sse/status", () => Results.Json(new { Status = "OK", Timestamp = DateTime.Now }));
 
@@ -168,6 +201,36 @@ app.MapPost("/api/sse/send", async (HttpRequest request, ILoggerFactory loggerFa
     }
 });
 
+// 给指定用户发送（新）：/sse/UsersID/{UsersID}/send
+app.MapPost("/sse/UsersID/{UsersID}/send", async (HttpRequest request, string UsersID, SseConnectionManager sse) =>
+{
+    try
+    {
+        string body;
+        using (var reader = new StreamReader(request.Body))
+        {
+            body = await reader.ReadToEndAsync();
+        }
+
+        string? message = null;
+        string eventType = "message";
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
+            eventType = root.TryGetProperty("eventType", out var e) ? e.GetString() ?? "message" : "message";
+        }
+
+        var delivered = await sse.SendToUserAsync(UsersID, eventType, message ?? string.Empty, request.HttpContext.RequestAborted);
+        return Results.Json(new { success = true, delivered });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, error = ex.Message }, statusCode: 400);
+    }
+});
+
 // SSL 状态查看
 app.MapGet("/ssl/status", async (AcmeService acme, IConfiguration config) =>
 {
@@ -212,6 +275,13 @@ app.MapGet("/dnspod/test", async (DnsPodApiClient dns) =>
 
 // 静态测试页
 app.MapGet("/", () => Results.Redirect("/sse-test-page.html"));
+
+// 友好路由：/UsersID/{UsersID} -> 加载接收测试页并由前端解析 UsersID
+app.MapGet("/UsersID/{UsersID}", (string UsersID) => Results.Redirect($"/sse-recv.html?UsersID={Uri.EscapeDataString(UsersID)}"));
+
+// 兼容旧路由别名（不建议继续使用）：/sse/users/{userId} 与 /sse/users/{userId}/send
+app.MapGet("/sse/users/{userId}", (HttpContext ctx, string userId) => Results.Redirect($"/sse/UsersID/{Uri.EscapeDataString(userId)}"));
+app.MapPost("/sse/users/{userId}/send", (HttpContext ctx, string userId) => Results.Redirect($"/sse/UsersID/{Uri.EscapeDataString(userId)}/send"));
 
 app.Run();
 
