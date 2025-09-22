@@ -83,8 +83,90 @@ app.MapGet("/sse", async context =>
     catch { /* 连接中断忽略 */ }
 });
 
+// 兼容别名：/api/sse/stream（与 /sse 相同实现）
+app.MapGet("/api/sse/stream", async context =>
+{
+    context.Response.Headers.Append("Content-Type", "text/event-stream");
+    context.Response.Headers.Append("Cache-Control", "no-cache");
+    context.Response.Headers.Append("Connection", "keep-alive");
+    context.Response.Headers.Append("Access-Control-Allow-Origin", "*");
+
+    try
+    {
+        while (!context.RequestAborted.IsCancellationRequested)
+        {
+            await context.Response.WriteAsync($"data: {{\"timestamp\":\"{DateTime.Now:yyyy-MM-dd HH:mm:ss}\",\"message\":\"Server is running\"}}\n\n");
+            await context.Response.Body.FlushAsync();
+            await Task.Delay(5000, context.RequestAborted);
+        }
+    }
+    catch { }
+});
+
 // 简单状态
 app.MapGet("/sse/status", () => Results.Json(new { Status = "OK", Timestamp = DateTime.Now }));
+
+// 发送消息到 SSE（当前实现仅记录日志并返回 success）
+app.MapPost("/sse/send", async (HttpRequest request, ILoggerFactory loggerFactory) =>
+{
+    try
+    {
+        string body;
+        using (var reader = new StreamReader(request.Body))
+        {
+            body = await reader.ReadToEndAsync();
+        }
+
+        string? message = null;
+        string? eventType = "message";
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
+            eventType = root.TryGetProperty("eventType", out var e) ? e.GetString() : "message";
+        }
+
+        var logger = loggerFactory.CreateLogger("SseSend");
+        logger.LogInformation("SSE Send: type={EventType}, message={Message}", eventType, message);
+        return Results.Json(new { success = true });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, error = ex.Message }, statusCode: 400);
+    }
+});
+
+// 别名：/api/sse/send
+app.MapPost("/api/sse/send", async (HttpRequest request, ILoggerFactory loggerFactory) =>
+{
+    try
+    {
+        string body;
+        using (var reader = new StreamReader(request.Body))
+        {
+            body = await reader.ReadToEndAsync();
+        }
+
+        string? message = null;
+        string? eventType = "message";
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
+            eventType = root.TryGetProperty("eventType", out var e) ? e.GetString() : "message";
+        }
+
+        var logger = loggerFactory.CreateLogger("SseSend");
+        logger.LogInformation("SSE Send (api): type={EventType}, message={Message}", eventType, message);
+        return Results.Json(new { success = true });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { success = false, error = ex.Message }, statusCode: 400);
+    }
+});
 
 // SSL 状态查看
 app.MapGet("/ssl/status", async (AcmeService acme, IConfiguration config) =>
