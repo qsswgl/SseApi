@@ -17,7 +17,6 @@ builder.Services.AddHttpClient();
 // 证书与DNSPOD相关服务
 builder.Services.AddSingleton<DnsPodApiClient>();
 builder.Services.AddSingleton<AcmeService>();
-builder.Services.AddSingleton<CertificateRenewalService>();
 builder.Services.AddHostedService<CertificateRenewalService>();
 
 // 新增：注册 SseConnectionManager

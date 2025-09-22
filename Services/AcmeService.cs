@@ -90,13 +90,37 @@ namespace SseApi.Services
             // 使用 Let's Encrypt V2，执行 DNS-01 验证，申请 *.domain 与根域名证书
             var identifiers = new[] { $"*.{_domain}", _domain };
             var createdRecordIds = new List<string>();
+            var accountKeyPath = System.IO.Path.Combine(_certificateStorePath, "acme-account.pem");
 
             try
             {
                 _logger.LogInformation("开始 ACME 申请: {Identifiers}", string.Join(",", identifiers));
 
-                var acme = new AcmeContext(WellKnownServers.LetsEncryptV2);
-                await acme.NewAccount(_email, true);
+                IAccountContext? account = null;
+                AcmeContext acme;
+                if (System.IO.File.Exists(accountKeyPath))
+                {
+                    var pem = await System.IO.File.ReadAllTextAsync(accountKeyPath);
+                    var key = KeyFactory.FromPem(pem);
+                    acme = new AcmeContext(WellKnownServers.LetsEncryptV2, key);
+                    try
+                    {
+                        // 尝试获取现有账户（如失败则新建）
+                        account = await acme.Account();
+                    }
+                    catch
+                    {
+                        account = await acme.NewAccount(_email, true);
+                    }
+                }
+                else
+                {
+                    acme = new AcmeContext(WellKnownServers.LetsEncryptV2);
+                    account = await acme.NewAccount(_email, true);
+                    var keyPem = acme.AccountKey.ToPem();
+                    await System.IO.File.WriteAllTextAsync(accountKeyPath, keyPem);
+                    _logger.LogInformation("已保存 ACME 账户密钥: {Path}", accountKeyPath);
+                }
 
                 var order = await acme.NewOrder(identifiers);
                 var authzs = await order.Authorizations();
