@@ -72,13 +72,22 @@ public class CertificateRenewalService : BackgroundService
             if (!_acmeService.IsCertificateValid(_currentCertificate, _renewDays))
             {
                 _logger.LogInformation("Certificate needs renewal or doesn't exist. Requesting new certificate...");
-                
-                var newCertificate = await _acmeService.RequestCertificateAsync();
-                if (newCertificate != null)
+
+                // 定义证书目录路径
+                var storePath = _configuration["SslCertificate:CertificateStorePath"] ?? "./certificates";
+
+                if (!System.IO.Directory.Exists(storePath))
                 {
-                    _currentCertificate = newCertificate;
+                    System.IO.Directory.CreateDirectory(storePath);
+                }
+
+                var cert = await _acmeService.RequestCertificateAsync();
+
+                if (cert != null)
+                {
+                    _currentCertificate = cert;
                     _logger.LogInformation("Certificate renewal completed successfully");
-                    
+
                     // 通知应用程序重新加载证书（如果需要的话）
                     await NotifyCertificateUpdatedAsync();
                 }
@@ -100,23 +109,21 @@ public class CertificateRenewalService : BackgroundService
 
     private async Task NotifyCertificateUpdatedAsync()
     {
-        // 这里可以实现证书更新后的通知逻辑
-        // 例如：通过 SSE 通知客户端，或者重启服务等
         try
         {
             using var scope = _serviceProvider.CreateScope();
             var connectionManager = scope.ServiceProvider.GetService<SseConnectionManager>();
-            
+
             if (connectionManager != null)
             {
-                await connectionManager.BroadcastAsync("certificate-renewed", new 
-                { 
+                await connectionManager.BroadcastAsync("certificate-renewed", new
+                {
                     timestamp = DateTime.UtcNow,
                     message = "SSL certificate has been renewed",
                     validFrom = _currentCertificate?.NotBefore,
                     validTo = _currentCertificate?.NotAfter
                 });
-                
+
                 _logger.LogInformation("Certificate renewal notification sent to SSE clients");
             }
         }

@@ -1,0 +1,28 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "dotnet build (SseApi)",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"build"
+			],
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "call /ssl/renew",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Method Post -Uri http://localhost:5000/ssl/renew | ConvertTo-Json -Depth 5"
+			],
+			"group": "run"
+		}
+	]
+}

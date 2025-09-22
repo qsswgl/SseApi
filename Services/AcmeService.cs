@@ -2,193 +2,220 @@ using Certes;
 using Certes.Acme;
 using Certes.Acme.Resource;
 using System.Security.Cryptography.X509Certificates;
-using SseApi.Services;
 
-namespace SseApi.Services;
-
-public class AcmeService
+namespace SseApi.Services
 {
-    private readonly DnsPodApiClient _dnsClient;
-    private readonly ILogger<AcmeService> _logger;
-    private readonly string _certificateStorePath;
-    private readonly string _domain;
-    private readonly string _email;
-
-    public AcmeService(DnsPodApiClient dnsClient, IConfiguration configuration, ILogger<AcmeService> logger)
+    public class AcmeService
     {
-        _dnsClient = dnsClient;
-        _logger = logger;
-        _certificateStorePath = configuration["SslCertificate:CertificateStorePath"] ?? "./certificates";
-        _domain = configuration["SslCertificate:Domain"] ?? throw new ArgumentException("Domain not configured");
-        _email = configuration["SslCertificate:Email"] ?? throw new ArgumentException("Email not configured");
+        private readonly DnsPodApiClient _dnsClient;
+        private readonly ILogger<AcmeService> _logger;
+        private readonly string _certificateStorePath;
+        private readonly string _domain;
+        private readonly string _email;
 
-        // 确保证书存储目录存在
-        System.IO.Directory.CreateDirectory(_certificateStorePath);
-    }
-
-    public async Task<X509Certificate2?> RequestCertificateAsync()
-    {
-        try
+        public AcmeService(DnsPodApiClient dnsClient, IConfiguration configuration, ILogger<AcmeService> logger)
         {
-            _logger.LogInformation("Starting certificate request for domain {Domain}", _domain);
+            _dnsClient = dnsClient;
+            _logger = logger;
+            _certificateStorePath = configuration["SslCertificate:CertificateStorePath"] ?? "./certificates";
+            _domain = configuration["SslCertificate:Domain"] ?? "qsgl.net";
+            _email = configuration["SslCertificate:Email"] ?? "admin@qsgl.net";
 
-            // 创建 ACME 上下文
-            var acme = new AcmeContext(WellKnownServers.LetsEncryptV2);
-            
-            // 创建账户（如果不存在）
-            var account = await acme.NewAccount(_email, true);
-            _logger.LogInformation("ACME account created/retrieved for {Email}", _email);
+            System.IO.Directory.CreateDirectory(_certificateStorePath);
+        }
 
-            // 创建订单（泛域名证书）
-            var order = await acme.NewOrder(new[] { _domain, $"*.{_domain}" });
-            _logger.LogInformation("ACME order created for {Domain} and *.{Domain}", _domain, _domain);
-
-            // 处理所有授权
-            var authzList = await order.Authorizations();
-            foreach (var authz in authzList)
+        // 兼容旧调用：尝试申请证书后再加载返回
+        public async Task<X509Certificate2?> RequestCertificateAsync()
+        {
+            try
             {
-                var authzResource = await authz.Resource();
-                var domain = authzResource.Identifier.Value;
-                _logger.LogInformation("Processing authorization for {Domain}", domain);
+                await ObtainCertificateAsync();
 
-                // 获取 DNS-01 挑战
-                var dnsChallenge = await authz.Dns();
-                var dnsTxt = acme.AccountKey.DnsTxt(dnsChallenge.Token);
-
-                // 添加 DNS TXT 记录
-                var challengeDomain = domain.StartsWith("*.") ? domain.Substring(2) : domain;
-                var recordId = await _dnsClient.AddTxtRecordAsync(challengeDomain, "_acme-challenge", dnsTxt);
-                
-                if (recordId == null)
+                var pfxPath = System.IO.Path.Combine(_certificateStorePath, $"{_domain}.pfx");
+                if (!System.IO.File.Exists(pfxPath))
                 {
-                    _logger.LogError("Failed to add DNS TXT record for {Domain}", domain);
+                    _logger.LogWarning("证书文件不存在: {Path}", pfxPath);
                     return null;
                 }
 
-                _logger.LogInformation("DNS TXT record added for {Domain}, waiting for DNS propagation...", domain);
-                
-                // 等待 DNS 传播
-                await Task.Delay(TimeSpan.FromMinutes(2));
-
-                try
-                {
-                    // 验证挑战
-                    await dnsChallenge.Validate();
-                    _logger.LogInformation("DNS challenge validated for {Domain}", domain);
-
-                    // 等待验证完成
-                    var authzStatus = await authz.Resource();
-                    var maxWaitTime = TimeSpan.FromMinutes(5);
-                    var startTime = DateTime.UtcNow;
-
-                    while (authzStatus.Status != AuthorizationStatus.Valid && 
-                           authzStatus.Status != AuthorizationStatus.Invalid &&
-                           DateTime.UtcNow - startTime < maxWaitTime)
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(10));
-                        authzStatus = await authz.Resource();
-                        _logger.LogDebug("Authorization status for {Domain}: {Status}", domain, authzStatus.Status);
-                    }
-
-                    if (authzStatus.Status != AuthorizationStatus.Valid)
-                    {
-                        _logger.LogError("Authorization failed for {Domain} with status {Status}", domain, authzStatus.Status);
-                        return null;
-                    }
-                }
-                finally
-                {
-                    // 清理 DNS 记录
-                    await _dnsClient.DeleteTxtRecordAsync(challengeDomain, recordId);
-                    _logger.LogInformation("DNS TXT record cleanup completed for {Domain}", domain);
-                }
+                var pfxBytes = await System.IO.File.ReadAllBytesAsync(pfxPath);
+                var cert = X509CertificateLoader.LoadPkcs12(pfxBytes, "");
+                _logger.LogInformation("已加载证书: {Subject}, NotAfter={NotAfter}", cert.Subject, cert.NotAfter);
+                return cert;
             }
-
-            // 生成证书
-            _logger.LogInformation("All authorizations completed, generating certificate...");
-            var privateKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
-            var cert = await order.Generate(new CsrInfo
+            catch (Exception ex)
             {
-                CountryName = "CN",
-                State = "Beijing",
-                Locality = "Beijing",
-                Organization = "Personal",
-                OrganizationUnit = "IT",
-                CommonName = _domain
-            }, privateKey);
-
-            // 保存证书
-            var certPath = Path.Combine(_certificateStorePath, $"{_domain}.pfx");
-            var pfxPassword = GenerateRandomPassword();
-            var pfxBytes = cert.ToPfx(privateKey).Build(_domain, pfxPassword);
-            
-            await File.WriteAllBytesAsync(certPath, pfxBytes);
-            await File.WriteAllTextAsync(Path.Combine(_certificateStorePath, $"{_domain}.password"), pfxPassword);
-            
-            _logger.LogInformation("Certificate saved to {CertPath}", certPath);
-
-            // 加载并返回证书
-            var certificate = X509CertificateLoader.LoadPkcs12(pfxBytes, pfxPassword);
-            _logger.LogInformation("Certificate requested successfully. Valid from {NotBefore} to {NotAfter}", 
-                certificate.NotBefore, certificate.NotAfter);
-
-            return certificate;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error requesting certificate for {Domain}", _domain);
-            return null;
-        }
-    }
-
-    public async Task<X509Certificate2?> LoadExistingCertificateAsync()
-    {
-        try
-        {
-            var certPath = Path.Combine(_certificateStorePath, $"{_domain}.pfx");
-            var passwordPath = Path.Combine(_certificateStorePath, $"{_domain}.password");
-
-            if (!File.Exists(certPath) || !File.Exists(passwordPath))
-            {
-                _logger.LogInformation("No existing certificate found for {Domain}", _domain);
+                _logger.LogError(ex, "RequestCertificateAsync 失败");
                 return null;
             }
-
-            var password = await File.ReadAllTextAsync(passwordPath);
-            var pfxBytes = await File.ReadAllBytesAsync(certPath);
-            var certificate = X509CertificateLoader.LoadPkcs12(pfxBytes, password);
-
-            _logger.LogInformation("Loaded existing certificate for {Domain}. Valid from {NotBefore} to {NotAfter}",
-                _domain, certificate.NotBefore, certificate.NotAfter);
-
-            return certificate;
         }
-        catch (Exception ex)
+
+        // 从磁盘加载现有证书
+        public async Task<X509Certificate2?> LoadExistingCertificateAsync()
         {
-            _logger.LogError(ex, "Error loading existing certificate for {Domain}", _domain);
-            return null;
+            try
+            {
+                var pfxPath = System.IO.Path.Combine(_certificateStorePath, $"{_domain}.pfx");
+                if (!System.IO.File.Exists(pfxPath))
+                {
+                    _logger.LogInformation("未找到现有证书: {Path}", pfxPath);
+                    return null;
+                }
+
+                var pfxBytes = await System.IO.File.ReadAllBytesAsync(pfxPath);
+                var cert = X509CertificateLoader.LoadPkcs12(pfxBytes, "");
+                _logger.LogInformation("已加载现有证书: {Subject}, NotAfter={NotAfter}", cert.Subject, cert.NotAfter);
+                return cert;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "加载现有证书失败");
+                return null;
+            }
         }
-    }
 
-    public bool IsCertificateValid(X509Certificate2? certificate, int renewDays = 30)
-    {
-        if (certificate == null)
-            return false;
+        // 判断证书是否仍然有效（距离过期 > renewDays）
+        public bool IsCertificateValid(X509Certificate2? certificate, int renewDays = 30)
+        {
+            if (certificate == null) return false;
+            var renewDate = DateTime.UtcNow.AddDays(renewDays);
+            var valid = certificate.NotAfter.ToUniversalTime() > renewDate;
+            _logger.LogInformation("证书有效性: NotAfter={NotAfter}, 阈值={RenewDate}, 仍有效={Valid}",
+                certificate.NotAfter, renewDate, valid);
+            return valid;
+        }
 
-        var renewDate = DateTime.UtcNow.AddDays(renewDays);
-        var isValid = certificate.NotAfter > renewDate;
+        public async Task ObtainCertificateAsync()
+        {
+            // 使用 Let's Encrypt V2，执行 DNS-01 验证，申请 *.domain 与根域名证书
+            var identifiers = new[] { $"*.{_domain}", _domain };
+            var createdRecordIds = new List<string>();
 
-        _logger.LogInformation("Certificate validity check for {Domain}: expires {NotAfter}, renew threshold {RenewDate}, valid: {IsValid}",
-            _domain, certificate.NotAfter, renewDate, isValid);
+            try
+            {
+                _logger.LogInformation("开始 ACME 申请: {Identifiers}", string.Join(",", identifiers));
 
-        return isValid;
-    }
+                var acme = new AcmeContext(WellKnownServers.LetsEncryptV2);
+                await acme.NewAccount(_email, true);
 
-    private static string GenerateRandomPassword(int length = 32)
-    {
-        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
-        var random = new Random();
-        return new string(Enumerable.Repeat(chars, length)
-            .Select(s => s[random.Next(s.Length)]).ToArray());
+                var order = await acme.NewOrder(identifiers);
+                var authzs = await order.Authorizations();
+
+                // 为每个授权创建对应的 TXT 记录
+                foreach (var authz in authzs)
+                {
+                    var authzRes = await authz.Resource();
+                    var idValue = authzRes.Identifier.Value; // 可能是 *.qsgl.net 或 qsgl.net
+                    var dnsChallenge = await authz.Dns();
+                    var dnsTxt = acme.AccountKey.DnsTxt(dnsChallenge.Token);
+
+                    var recordName = GetDnsChallengeRecordName(idValue);
+                    var recordId = await _dnsClient.AddTxtRecordAsync(_domain, recordName, dnsTxt);
+                    if (!string.IsNullOrEmpty(recordId))
+                    {
+                        createdRecordIds.Add(recordId);
+                        _logger.LogInformation("已创建 TXT 记录: {RecordName}.{Domain} -> {RecordId}", recordName, _domain, recordId);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException($"创建 TXT 记录失败: {recordName}.{_domain}");
+                    }
+                }
+
+                // 等待 DNS 生效并验证，每个挑战轮询一段时间
+                foreach (var authz in authzs)
+                {
+                    var authzRes = await authz.Resource();
+                    var idValue = authzRes.Identifier.Value;
+                    var challenge = await authz.Dns();
+                    var success = false;
+                    for (var i = 0; i < 30; i++) // 最多约5分钟
+                    {
+                        try { await challenge.Validate(); } catch { /* 忽略瞬时错误 */ }
+
+                        var resource = await challenge.Resource();
+                        if (resource.Status == ChallengeStatus.Valid)
+                        {
+                            success = true;
+                            break;
+                        }
+                        else if (resource.Status == ChallengeStatus.Invalid)
+                        {
+                            throw new InvalidOperationException($"DNS 验证失败: {idValue}");
+                        }
+
+                        await Task.Delay(TimeSpan.FromSeconds(10));
+                    }
+
+                    if (!success)
+                    {
+                        throw new TimeoutException($"DNS 验证超时: {idValue}");
+                    }
+                }
+
+                // 生成证书（ES256 私钥）
+                var privateKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
+                var certChain = await order.Generate(new CsrInfo
+                {
+                    CommonName = _domain,
+                }, privateKey);
+
+                var pfxBuilder = certChain.ToPfx(privateKey);
+                var pfxBytes = pfxBuilder.Build(_domain, "");
+                var pfxPath = System.IO.Path.Combine(_certificateStorePath, $"{_domain}.pfx");
+                await System.IO.File.WriteAllBytesAsync(pfxPath, pfxBytes);
+
+                _logger.LogInformation("证书已保存: {Path}", pfxPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ACME 申请失败");
+                throw;
+            }
+            finally
+            {
+                // 清理 TXT 记录
+                foreach (var rid in createdRecordIds)
+                {
+                    try
+                    {
+                        await _dnsClient.DeleteTxtRecordAsync(_domain, rid);
+                    }
+                    catch (Exception dex)
+                    {
+                        _logger.LogWarning(dex, "清理 TXT 记录失败: {RecordId}", rid);
+                    }
+                }
+            }
+        }
+
+        private string GetDnsChallengeRecordName(string identifier)
+        {
+            // ACME DNS-01: _acme-challenge.[left-part]
+            // 示例：
+            //  - qsgl.net => _acme-challenge
+            //  - *.qsgl.net => _acme-challenge
+            //  - www.qsgl.net => _acme-challenge.www
+            var host = identifier.TrimEnd('.');
+            if (host.Equals(_domain, StringComparison.OrdinalIgnoreCase))
+                return "_acme-challenge";
+
+            var wildcardPrefix = "*.";
+            if (host.StartsWith(wildcardPrefix, StringComparison.Ordinal))
+            {
+                host = host.Substring(wildcardPrefix.Length);
+            }
+
+            if (host.EndsWith($".{_domain}", StringComparison.OrdinalIgnoreCase))
+            {
+                var left = host[..^("." + _domain).Length];
+                if (string.IsNullOrWhiteSpace(left) || left == "*")
+                    return "_acme-challenge";
+                return $"_acme-challenge.{left}";
+            }
+
+            // 回退：默认根域名
+            return "_acme-challenge";
+        }
     }
 }
