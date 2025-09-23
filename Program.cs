@@ -26,36 +26,44 @@ builder.Services.AddHostedService<CertificateRenewalService>();
 // 新增：注册 SseConnectionManager
 builder.Services.AddSingleton<SseConnectionManager>();
 
-// 配置 Kestrel 使用已申请到的证书（若存在）
+// 配置 Kestrel：显式监听端口并在 HTTPS 上开启 HTTP/3（客户端与系统不支持时将自动回退到 H2/H1）
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.ConfigureHttpsDefaults(httpsOptions =>
+    // HTTP: 开启 HTTP/1 与 HTTP/2（便于反代或明文调试）
+    options.ListenAnyIP(5000, listen =>
     {
-        httpsOptions.ServerCertificateSelector = (connCtx, name) =>
-        {
-            try
-            {
-                var config = builder.Configuration;
-                var domain = config["SslCertificate:Domain"] ?? "qsgl.net";
-                var storePath = config["SslCertificate:CertificateStorePath"] ?? "./certificates";
-                var pfxPath = System.IO.Path.Combine(storePath, $"{domain}.pfx");
-                var passwordPath = System.IO.Path.Combine(storePath, $"{domain}.password");
+        listen.Protocols = HttpProtocols.Http1AndHttp2;
+    });
 
-                if (System.IO.File.Exists(pfxPath))
-                {
-                    var pwd = System.IO.File.Exists(passwordPath) ? System.IO.File.ReadAllText(passwordPath) : string.Empty;
-                    var certBytes = System.IO.File.ReadAllBytes(pfxPath);
-                    // 使用推荐的加载方式
-                    return X509CertificateLoader.LoadPkcs12(certBytes, pwd);
-                }
-            }
-            catch
+    // HTTPS: 开启 HTTP/1 + HTTP/2 + HTTP/3，并保留证书选择逻辑
+    options.ListenAnyIP(5001, listen =>
+    {
+        listen.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
+        listen.UseHttps(httpsOptions =>
+        {
+            httpsOptions.ServerCertificateSelector = (connCtx, name) =>
             {
-                // 忽略选择失败，使用开发证书
-            }
-            // 返回 null 表示继续走系统证书选择流程（开发证书或SNI证书）
-            return null;
-        };
+                try
+                {
+                    var config = builder.Configuration;
+                    var domain = config["SslCertificate:Domain"] ?? "qsgl.net";
+                    var storePath = config["SslCertificate:CertificateStorePath"] ?? "./certificates";
+                    var pfxPath = System.IO.Path.Combine(storePath, $"{domain}.pfx");
+                    var passwordPath = System.IO.Path.Combine(storePath, $"{domain}.password");
+
+                    if (System.IO.File.Exists(pfxPath))
+                    {
+                        var pwd = System.IO.File.Exists(passwordPath) ? System.IO.File.ReadAllText(passwordPath) : string.Empty;
+                        var certBytes = System.IO.File.ReadAllBytes(pfxPath);
+                        return X509CertificateLoader.LoadPkcs12(certBytes, pwd);
+                    }
+                }
+                catch
+                {
+                }
+                return null;
+            };
+        });
     });
 });
 
