@@ -8,11 +8,14 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using SseApi.Services; // 证书与SSE服务
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory
+});
 
-// 在独立部署场景下，确保内容根目录指向可执行文件所在目录
-// 这样相对路径例如 ./certificates 与 wwwroot 都能正确解析
-builder.WebHost.UseContentRoot(AppContext.BaseDirectory);
+// 在独立部署场景下，内容根目录已设置为可执行文件所在目录
+// 相对路径例如 ./certificates 与 wwwroot 都能正确解析
 
 // 基础服务
 builder.Services.AddControllers();
