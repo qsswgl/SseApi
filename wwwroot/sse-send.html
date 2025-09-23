@@ -15,7 +15,7 @@
 </head>
 <body>
   <h2>SSE 发送测试（按用户）</h2>
-  <div class="row"><label>UsersID</label><input id="userId" placeholder="例如：1" value="1" /></div>
+  <div class="row"><label>UsersID（可输入多个，逗号分隔）</label><input id="userId" placeholder="例如：1,2,4,5,7" value="1" /></div>
   <div class="row"><label>事件类型（可选）</label><input id="eventType" placeholder="例如：message/notification/custom" value="message" /></div>
   <div class="row"><label>消息内容</label><textarea id="message" placeholder='例如：{"text":"Hello"}'>{"text":"Hello SSE"}</textarea></div>
   <div class="row"><button id="btnSend">发送</button> <span id="result" class="badge"></span></div>

@@ -10,6 +10,10 @@ using SseApi.Services; // 证书与SSE服务
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 在独立部署场景下，确保内容根目录指向可执行文件所在目录
+// 这样相对路径例如 ./certificates 与 wwwroot 都能正确解析
+builder.WebHost.UseContentRoot(AppContext.BaseDirectory);
+
 // 基础服务
 builder.Services.AddControllers();
 builder.Services.AddHttpClient();
@@ -49,6 +53,7 @@ builder.WebHost.ConfigureKestrel(options =>
             {
                 // 忽略选择失败，使用开发证书
             }
+            // 返回 null 表示继续走系统证书选择流程（开发证书或SNI证书）
             return null;
         };
     });
@@ -61,6 +66,7 @@ if (app.Environment.IsDevelopment())
     app.UseDeveloperExceptionPage();
 }
 
+app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // SSE endpoint（使用 Append 避免重复键警告）
@@ -222,8 +228,23 @@ app.MapPost("/sse/UsersID/{UsersID}/send", async (HttpRequest request, string Us
             eventType = root.TryGetProperty("eventType", out var e) ? e.GetString() ?? "message" : "message";
         }
 
-        var delivered = await sse.SendToUserAsync(UsersID, eventType, message ?? string.Empty, request.HttpContext.RequestAborted);
-        return Results.Json(new { success = true, delivered });
+        var ids = UsersID
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
+            .ToArray();
+
+        var perUsers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var total = 0;
+        foreach (var id in ids)
+        {
+            var count = await sse.SendToUserAsync(id, eventType, message ?? string.Empty, request.HttpContext.RequestAborted);
+            perUsers[id] = count;
+            total += count;
+        }
+
+        return Results.Json(new { success = true, targets = ids, delivered = total, perUsers });
     }
     catch (Exception ex)
     {
