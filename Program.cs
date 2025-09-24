@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Https;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using SseApi.Services; // 证书与SSE服务
+using Microsoft.Extensions.Hosting.WindowsServices;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -16,6 +17,13 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 
 // 在独立部署场景下，内容根目录已设置为可执行文件所在目录
 // 相对路径例如 ./certificates 与 wwwroot 都能正确解析
+
+// 如果在 Windows 上运行，启用 Windows 服务集成与事件日志
+if (OperatingSystem.IsWindows())
+{
+    builder.Host.UseWindowsService();
+    builder.Logging.AddEventLog();
+}
 
 // 基础服务
 builder.Services.AddControllers();

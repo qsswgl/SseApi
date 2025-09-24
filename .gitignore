@@ -160,6 +160,8 @@ DocProject/Help/html
 
 # Click-Once directory
 publish/
+# Self-contained publish outputs (do NOT commit)
+publish-standalone*/
 
 # Publish Web Output
 *.[Pp]ublish.xml
