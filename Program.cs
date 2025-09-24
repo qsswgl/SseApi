@@ -9,10 +9,14 @@ using System.Security.Cryptography.X509Certificates;
 using SseApi.Services; // 证书与SSE服务
 using Microsoft.Extensions.Hosting.WindowsServices;
 
+var baseDir = AppContext.BaseDirectory;
+var exeDir = System.IO.Path.GetDirectoryName(Environment.ProcessPath) ?? baseDir;
+var chosenContentRoot = System.IO.File.Exists(System.IO.Path.Combine(baseDir, "appsettings.json")) ? baseDir : exeDir;
+
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
     Args = args,
-    ContentRootPath = AppContext.BaseDirectory
+    ContentRootPath = chosenContentRoot
 });
 
 // 在独立部署场景下，内容根目录已设置为可执行文件所在目录
